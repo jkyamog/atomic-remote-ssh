@@ -1,0 +1,13 @@
+{
+  "name": "atomic-remote-ssh",
+  "version": "0.1.0",
+  "description": "atomic extension: remote SSH execution (remote_bash/remote_read/remote_write) plus transparent per-session read/write/edit/bash routing (ssh_connect/ssh_disconnect).",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}
