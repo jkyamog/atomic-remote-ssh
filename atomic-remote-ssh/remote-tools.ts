@@ -29,7 +29,7 @@ export function registerAdditiveTools(pi, deps) {
       host: Type.String({ description: "SSH target, user@host" }),
       command: Type.String({ description: "Command line, executed by the remote bash" }),
       cwd: Type.Optional(Type.String({ description: "Remote working directory (cd'ed into before the command)" })),
-      timeout_seconds: Type.Optional(Type.Number({ description: "Kill after N seconds (default 120, max 900)" })),
+      timeout_seconds: Type.Optional(Type.Number({ description: "Kill after N seconds (default 120, max 1800)" })),
     }),
     async execute(_id, params, signal) {
       const to = clampTimeoutSeconds(params.timeout_seconds) * 1000;

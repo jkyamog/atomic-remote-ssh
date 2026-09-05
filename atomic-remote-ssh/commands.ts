@@ -6,9 +6,11 @@
 /** Shell-quote for POSIX sh: `'` -> `'\''`. No command substitution inside. */
 const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 
-/** remote_bash timeout clamp, in seconds: default 120, min 5, max 900. */
+/** remote_bash timeout clamp, in seconds: default 120, min 5, max 1800.
+ * Max raised 900 -> 1800 (2026-09-05, T13 OpenSandbox POC): long docker pulls on slow upstreams.
+ * nohup+poll remains the convention beyond one call. */
 export function clampTimeoutSeconds(n) {
-  return Math.min(Math.max(n ?? 120, 5), 900);
+  return Math.min(Math.max(n ?? 120, 5), 1800);
 }
 
 /** remote_read max_bytes clamp: default 200_000, max 1_000_000. */

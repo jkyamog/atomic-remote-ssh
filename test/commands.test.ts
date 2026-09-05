@@ -14,10 +14,11 @@ import {
   connectPrepareCommand,
 } from "../atomic-remote-ssh/commands.ts";
 
-test("clampTimeoutSeconds: undefined->120, 0->5, 1000->900 (ms conversion stays in the tool layer)", () => {
+test("clampTimeoutSeconds: undefined->120, 0->5, 1000 pass-through, 5000->1800 (ms conversion stays in the tool layer)", () => {
   assert.equal(clampTimeoutSeconds(undefined), 120);
   assert.equal(clampTimeoutSeconds(0), 5);
-  assert.equal(clampTimeoutSeconds(1_000), 900);
+  assert.equal(clampTimeoutSeconds(1_000), 1_000); // below the cap passes through
+  assert.equal(clampTimeoutSeconds(5_000), 1800);
   assert.equal(clampTimeoutSeconds(120) * 1000, 120_000);
   assert.equal(clampTimeoutSeconds(30) * 1000, 30_000);
 });
