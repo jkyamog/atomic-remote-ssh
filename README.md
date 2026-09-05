@@ -71,6 +71,8 @@ ssh-keyscan -H example-host >> ~/.ssh/known_hosts
 
 Use the FQDN, e.g. `user@example.host`. A bare `example-host` can resolve to `127.0.1.1` and fail.
 
+`host` is `user@host` (charset-only) — no `:port` suffix, which OpenSSH's `ssh` destination syntax does not support (that is scp/sftp syntax). For non-default ports, configure `Host <name>` + `Port <n>` in `~/.ssh/config` and pass that alias as `host`.
+
 ## Usage
 
 Additive (any session, no shared state):

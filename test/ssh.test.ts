@@ -31,17 +31,16 @@ test("buildSshArgs throws on malformed hosts (option injection, charset, empty)"
     "h|rm",
     "user@host name",
     "user@ho\nst",
+    "user@host:2222",
   ]) {
     assert.throws(() => buildSshArgs(bad, "pwd"), /invalid ssh host/, JSON.stringify(bad));
   }
 });
 
-test("buildSshArgs accepts valid user@host, bare host, dotted FQDN, and :port", () => {
+test("buildSshArgs accepts valid user@host, bare host, dotted FQDN", () => {
   assert.doesNotThrow(() => buildSshArgs("user@example.host", "pwd"));
   assert.doesNotThrow(() => buildSshArgs("bare-host.example", "pwd"));
   assert.doesNotThrow(() => buildSshArgs("user@host.example.host", "pwd"));
-  assert.doesNotThrow(() => buildSshArgs("user@host:2222", "pwd"));
-  assert.equal(buildSshArgs("user@host:2222", "pwd")[15], "user@host:2222");
 });
 
 test("SSH_OPTS: no predictable /tmp ControlPath; private hashed path instead", () => {

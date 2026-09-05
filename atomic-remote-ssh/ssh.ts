@@ -28,8 +28,10 @@ try {
   mkdirSync(join(process.env.HOME ?? "", ".cache", "atomic-ssh"), { recursive: true, mode: 0o700 });
 } catch {}
 
-/** Strict ssh host: charset-only user@host (or bare host), optional :port. */
-const HOST_RE = /^(?:[A-Za-z0-9._%-]+@)?[A-Za-z0-9][A-Za-z0-9._-]*(?::[0-9]+)?$/;
+/** Strict ssh host: charset-only user@host (or bare host). No :port —
+ * OpenSSH's destination syntax doesn't take a port (that's scp/sftp);
+ * configure non-default ports via ~/.ssh/config `Port` instead. */
+const HOST_RE = /^(?:[A-Za-z0-9._%-]+@)?[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** Pure: validate host, frozen options, `--` terminator, host, command. */
 export function buildSshArgs(host, command) {
