@@ -1,17 +1,34 @@
-# atomic-remote-ssh
+# atomic-remote-extensions
 
-Remote execution over SSH for atomic workflow stages, as a plain extension. Two modes load at the same time:
+Remote execution + OpenSandbox lifecycle for atomic workflow stages, as plain
+extensions. Two extensions ship in this repo, both over the same SSH transport:
 
-1. **Additive tools** — `remote_bash`, `remote_read`, `remote_write`: each call carries its own `host` (and optional `cwd`), so concurrent stages may target different machines with no shared state.
-2. **Transparent routing** — `ssh_connect` / `ssh_disconnect`: this session's built-in `read`/`write`/`edit`/`bash` tools are transparently routed to the remote host, keyed per session. Sessions that never connect keep plain local tools.
+1. **atomic-remote-ssh** — remote execution over SSH. Two modes load at the same time:
+   - **Additive tools** — `remote_bash`, `remote_read`, `remote_write`: each call carries its own `host` (and optional `cwd`), so concurrent stages may target different machines with no shared state.
+   - **Transparent routing** — `ssh_connect` / `ssh_disconnect`: this session's built-in `read`/`write`/`edit`/`bash` tools are transparently routed to the remote host, keyed per session. Sessions that never connect keep plain local tools.
+2. **atomic-remote-sandbox** — OpenSandbox lifecycle + command execution. Four additive tools, each call carrying its own `host` (the OpenSandbox lifecycle manager is loopback-only at `127.0.0.1:8090` on that host).
 
-Auth rides the ssh-agent sidecar (`SSH_AUTH_SOCK` is inherited from the launcher env); keys never enter the container. ControlMaster multiplexing keeps per-call latency low.
+Auth rides the ssh-agent sidecar (`SSH_AUTH_SOCK` is inherited from the launcher env); keys never enter the container. ControlMaster multiplexing keeps per-call latency low. The sandbox extension reuses the ssh transport (`createSshRunner`) — there is no duplicate ssh layer.
 
-## Tools
+## Layout
+
+Both extensions live under `extensions/`; each root `*.ts` file is one extension's entry (the loader auto-discovers top-level `*.ts` files):
+
+```
+atomic-remote-ssh.ts        # entry: registerRemoteSsh
+atomic-remote-sandbox.ts    # entry: registerRemoteSandbox
+extensions/
+  atomic-remote-ssh/        # ssh.ts, targets.ts, paths.ts, commands.ts, ops.ts,
+                            #   remote-tools.ts, transparent-tools.ts
+  atomic-remote-sandbox/    # commands.ts, sandbox-tools.ts
+test/                       # node --test (spawner injected, no real ssh)
+```
+
+## atomic-remote-ssh
 
 | Tool | Parameters | Defaults / clamps |
 |---|---|---|
-| `remote_bash` | `host`, `command`, `cwd?`, `timeout_seconds?` | kill after `min(max(sec ?? 120, 5), 900)` seconds |
+| `remote_bash` | `host`, `command`, `cwd?`, `timeout_seconds?` | kill after `min(max(sec ?? 120, 5), 1800)` seconds |
 | `remote_read` | `host`, `path`, `max_bytes?` | `min(max_bytes ?? 200000, 1000000)`; 60 s ssh timeout |
 | `remote_write` | `host`, `path`, `content` | base64 over stdin, `mkdir -p` of parent dir; 60 s ssh timeout |
 | `ssh_connect` | `host`, `cwd?` | `cwd` defaults to remote home; created if missing |
@@ -19,23 +36,50 @@ Auth rides the ssh-agent sidecar (`SSH_AUTH_SOCK` is inherited from the launcher
 
 Output over 40 000 characters is capped to the first 12 000 + `\n...[truncated]...\n` + last 12 000.
 
-## Install
+## atomic-remote-sandbox
 
-Clone (or download) this repo, then copy the entry file **and** the shared subdirectory into your extensions dir:
+Four additive tools against the OpenSandbox lifecycle manager (`127.0.0.1:8090` on the target host). Auth is the `OPEN-SANDBOX-API-KEY` header (default `poc-t13-nyx`; override per call with `api_key`).
 
-```bash
-git clone https://github.com/jkyamog/atomic-remote-ssh
-EXT=~/.atomic/agent/extensions        # or legacy ~/.pi/agent/extensions
-mkdir -p "$EXT"
-cp atomic-remote-ssh/atomic-remote-ssh.ts "$EXT/"
-cp -r atomic-remote-ssh/atomic-remote-ssh "$EXT/"
+| Tool | Parameters | Notes |
+|---|---|---|
+| `sandbox_list` | `host`, `api_key?` | `GET /v1/sandboxes`; returns the raw manager JSON |
+| `sandbox_create` | `host`, `image`, `cpu?`, `memory?`, `timeout?`, `name?`, `api_key?` | `POST /v1/sandboxes`; defaults `cpu=500m`, `memory=512Mi`, `timeout=900`, `name=atomic-sandbox`; 1800 s ssh timeout (long docker pulls) |
+| `sandbox_exec` | `host`, `sandbox_id`, `command`, `api_key?` | resolves the server-proxied execd endpoint (`GET /v1/sandboxes/{id}/endpoints/44772?use_server_proxy=true`), then `POST {endpoint}/command`; concatenates the SSE `stdout` stream and reports `execution_complete` |
+| `sandbox_destroy` | `host`, `sandbox_id`, `api_key?` | `DELETE /v1/sandboxes/{id}`, then re-lists to confirm the id is gone |
+
+### The create payload
+
+`sandbox_create` posts this exact JSON (key order preserved by `JSON.stringify`):
+
+```json
+{"image":{"uri":"<image>"},"timeout":<timeout ?? 900>,"resourceLimits":{"cpu":"<cpu ?? 500m>","memory":"<memory ?? 512Mi>"},"entrypoint":["sh","-c","while :; do sleep 3600; done"],"metadata":{"name":"<name ?? atomic-sandbox>"}}
 ```
 
-Do not rename the `atomic-remote-ssh/` subdirectory and do not add an `index.ts` inside it — the loader auto-discovers top-level `*.ts` entries, and a stray `index.ts` would load as a second extension.
+The `entrypoint` is a no-op keep-alive loop (`while :; do sleep 3600; done`) so the container stays alive and reachable for `sandbox_exec`.
+
+### Execd warmup retry (never fail fast)
+
+The gVisor execd proxy returns `502` (or an empty stream) until it is warm. `sandbox_exec` therefore **never fails fast on the first attempt**: it retries up to **5 attempts, 5 s apart**, on a `502`/`5xx`/no-status response or an empty `2xx` stream. A `3xx`/`4xx` is a definitive client error and fails fast (no retry). Each attempt is observable via curl's `-w '\n__HTTP_CODE__:%{http_code}'` write-out.
+
+## Install
+
+Clone (or download) this repo, then copy **both** entry files and the shared `extensions/` subdirectory into your extensions dir:
+
+```bash
+git clone https://github.com/jkyamog/atomic-remote-extensions
+EXT=~/.atomic/agent/extensions        # or legacy ~/.pi/agent/extensions
+mkdir -p "$EXT"
+cp atomic-remote-ssh.ts atomic-remote-sandbox.ts "$EXT/"
+cp -r extensions "$EXT/"
+```
+
+The entries import from `./extensions/...`, so the `extensions/` subdirectory must sit next to them. Do not add an `index.ts` inside a subdirectory — the loader auto-discovers top-level `*.ts` entries, and a stray `index.ts` would load as a second extension.
+
+> Container deployments may flatten the layout (one subdirectory per extension, e.g. `$EXT/atomic-remote-ssh/` + `$EXT/atomic-remote-sandbox/`) and point the entry imports at the flat paths; the module files themselves are unchanged.
 
 ### Make the host's modules resolvable (node_modules symlinks)
 
-The entry imports `typebox` and lazily imports `@bastani/atomic`. The extensions dir has no `package.json`, so point node at the host install:
+The entries import `typebox` and lazily import `@bastani/atomic`. The extensions dir has no `package.json`, so point node at the host install:
 
 ```bash
 EXT=~/.atomic/agent/extensions
@@ -75,7 +119,7 @@ Use the FQDN, e.g. `user@example.host`. A bare `example-host` can resolve to `12
 
 ## Usage
 
-Additive (any session, no shared state):
+Additive ssh (any session, no shared state):
 
 ```
 remote_bash(host="user@example.host", command="uname -a")
@@ -83,7 +127,7 @@ remote_read(host="user@example.host", path="/etc/hostname")
 remote_write(host="user@example.host", path="/tmp/hello.txt", content="hi")
 ```
 
-Transparent (per session):
+Transparent ssh (per session):
 
 ```
 ssh_connect(host="user@example.host", cwd="/home/user/Projects/foo")
@@ -97,9 +141,25 @@ Concurrent sessions route independently: the target is keyed by `sessionManager.
 
 In real atomic sessions `ctx` is always supplied by the loader (`runner.createContext()` → the runner's live `SessionManager`), and `SessionManager.sessionId` is always non-empty, so targets are strictly per-session. The `__global__` fallback exists only for out-of-loader test harnesses; if it were ever hit in production, multiple callers would silently share one target.
 
+OpenSandbox lifecycle:
+
+```
+sandbox_create(host="user@example.host", image="python:3.11", cpu="1", memory="1Gi", timeout=120, name="mine")
+# -> created id=sbx_... state=Running
+sandbox_exec(host="user@example.host", sandbox_id="sbx_...", command="python -c 'print(1+1)'")
+# -> 2
+# [execution_complete: true]
+sandbox_list(host="user@example.host")
+sandbox_destroy(host="user@example.host", sandbox_id="sbx_...")
+# -> destroyed sbx_... (confirmed gone)
+```
+
 ## Development
 
 - Tests: `node --test` from the repo root (node ≥ 22.18 with native type stripping). No network, no real ssh — the spawner is injected. `node --test test/` is NOT supported on node 22 (the directory is treated as an entry module); use `node --test` or a glob.
-- The five core modules (`atomic-remote-ssh/ssh.ts`, `targets.ts`, `paths.ts`, `commands.ts`, `ops.ts`) import neither `typebox` nor `@bastani/atomic`, so they unit-test under plain `node --test`. Tool-registration tests self-skip when `typebox` is not resolvable in the test environment.
-- Deep-module design: `ssh.ts` (transport, injectable spawner), `targets.ts` (per-session target registry), `paths.ts` (local→remote path mapping), `commands.ts` (remote shell command construction + clamps), `ops.ts` (transparent-mode operations bundles) — each a small interface hiding one concern.
+- The core modules (`atomic-remote-ssh/{ssh,targets,paths,commands,ops}.ts` and `atomic-remote-sandbox/commands.ts`) import neither `typebox` nor `@bastani/atomic`, so they unit-test under plain `node --test`. Tool-registration tests self-skip when `typebox` is not resolvable in the test environment.
+- Deep-module design:
+  - `atomic-remote-ssh`: `ssh.ts` (transport, injectable spawner), `targets.ts` (per-session target registry), `paths.ts` (local→remote path mapping), `commands.ts` (remote shell command construction + clamps), `ops.ts` (transparent-mode operations bundles).
+  - `atomic-remote-sandbox`: `commands.ts` (curl command construction + SSE/endpoint parsing + retry classification), `sandbox-tools.ts` (the four typebox tools, sharing the ssh transport).
+  - Each is a small interface hiding one concern; the two entries wire the tools to `createSshRunner()`.
 - License: MIT (see `LICENSE`).
