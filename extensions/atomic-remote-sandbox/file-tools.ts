@@ -102,7 +102,7 @@ export function registerFileTools(pi, deps) {
         const metadata = buildFileMetadata(params.remote_path, mode, params.owner, params.group);
         const r = await withRetry(exec, {
           host: params.host,
-          cmd: uploadCommand(apiKey, ep.endpointUrl, metadata),
+          cmd: uploadCommand(apiKey, ep.endpointUrl, metadata, basename(params.remote_path)),
           signal,
           timeoutMs: UPLOAD_TIMEOUT_MS,
           maxAttempts,

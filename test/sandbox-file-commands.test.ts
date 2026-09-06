@@ -57,20 +57,23 @@ test("defaultMode: 755 on any execute bit, else 644", () => {
   assert.equal(defaultMode(0o100444), 644);
 });
 
-test("uploadCommand: multipart POST, metadata part first, file=@- stdin part, -w tag", () => {
+test("uploadCommand: multipart POST, metadata part first, file=@- stdin part, filenames on both parts (FormFile requirement), -w tag", () => {
   const meta = buildFileMetadata("/opt/a.py", 755);
   assert.equal(
-    uploadCommand("k", EP, meta),
-    `curl -sS -X POST -H 'OPEN-SANDBOX-API-KEY: k' -F 'metadata=${meta};type=application/json' -F 'file=@-;type=application/octet-stream' ${W_TAG} '${EP}/files/upload'`,
+    uploadCommand("k", EP, meta, "a.py"),
+    `curl -sS -X POST -H 'OPEN-SANDBOX-API-KEY: k' -F 'metadata=${meta};type=application/json;filename=metadata' -F 'file=@-;type=application/octet-stream;filename=a.py' ${W_TAG} '${EP}/files/upload'`,
   );
+  // default file-part filename keeps the pure builder standalone-runnable
+  assert.ok(uploadCommand("k", EP, meta).includes("filename=file"), "default filename=file missing");
   // part order: metadata part must precede the file part
-  const cmd = uploadCommand("k", EP, meta);
+  const cmd = uploadCommand("k", EP, meta, "a.py");
   assert.ok(cmd.indexOf("metadata=") < cmd.indexOf("file=@-"), `got: ${cmd}`);
 });
 
 test("uploadCommand: double-quoted metadata survives single-quoting; a single quote in the path is q-escaped", () => {
-  const cmd = uploadCommand("k", EP, buildFileMetadata("/tmp/a'b.py", 644));
-  assert.ok(cmd.includes(`-F 'metadata={"path":"/tmp/a'\\''b.py","mode":644};type=application/json'`), `got: ${cmd}`);
+  const cmd = uploadCommand("k", EP, buildFileMetadata("/tmp/a'b.py", 644), "a'b.py");
+  assert.ok(cmd.includes(`-F 'metadata={"path":"/tmp/a'\\''b.py","mode":644};type=application/json;filename=metadata'`), `got: ${cmd}`);
+  assert.ok(cmd.includes(`filename=a'\\''b.py'`), `got: ${cmd}`);
 });
 
 test("fileInfoCommand: GET with URL-encoded path", () => {

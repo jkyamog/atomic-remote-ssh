@@ -189,13 +189,18 @@ export function defaultMode(statMode) {
 /**
  * POST {endpoint}/files/upload — multipart/form-data, metadata part FIRST
  * (application/json), then the file part read from stdin (`file=@-`; the
- * local bytes ride the ssh leg's stdin). Deliberately NOT `-f`: a 502
- * (execd warmup) still completes the transfer, so the status code is
- * observable in the write-out for the retry decision.
+ * local bytes ride the ssh leg's stdin). BOTH parts carry a filename:
+ * execd reads the parts via FormFile, which ignores bare form fields, so a
+ * filename-less metadata part fails with 400 INVALID_FILE_METADATA
+ * ("metadata file is missing"). Mirrors the JS SDK wire format exactly
+ * (filesystemAdapter.ts: name="metadata", filename="metadata"; name="file",
+ * filename=basename(remote_path)). Deliberately NOT `-f`: a 502 (execd
+ * warmup) still completes the transfer, so the status code is observable
+ * in the write-out for the retry decision.
  */
-export function uploadCommand(apiKey, endpointUrl, metadataJson) {
-  const meta = q(`metadata=${metadataJson};type=application/json`);
-  const file = q("file=@-;type=application/octet-stream");
+export function uploadCommand(apiKey, endpointUrl, metadataJson, fileName = "file") {
+  const meta = q(`metadata=${metadataJson};type=application/json;filename=metadata`);
+  const file = q(`file=@-;type=application/octet-stream;filename=${fileName}`);
   return `curl -sS -X POST ${apiKeyHeader(apiKey)} -F ${meta} -F ${file} -w '${W_HTTP_CODE}' ${q(endpointUrl + "/files/upload")}`;
 }
 

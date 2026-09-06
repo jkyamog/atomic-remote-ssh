@@ -59,9 +59,6 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
   };
 
   const workdir = mkdtempSync(join(tmpdir(), "atomic-file-tools-"));
-  const t0 = Date.now();
-  const ts = (label) => console.error(`[probe] +${Date.now() - t0}ms ${label}`);
-
 
   // --- sandbox_push: happy path (endpoint -> upload POST -> info GET) ----
   {
@@ -82,8 +79,8 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     let c1 = last();
     const up = cmdOf(c1);
     assert.match(up, /^curl -sS -X POST /);
-    assert.ok(up.includes(`-F 'metadata={"path":"/opt/a.txt","mode":755};type=application/json'`), `got: ${up}`);
-    assert.ok(up.includes(`-F 'file=@-;type=application/octet-stream'`), `got: ${up}`);
+    assert.ok(up.includes(`-F 'metadata={"path":"/opt/a.txt","mode":755};type=application/json;filename=metadata'`), `got: ${up}`);
+    assert.ok(up.includes(`-F 'file=@-;type=application/octet-stream;filename=a.txt'`), `got: ${up}`);
     assert.ok(up.indexOf("metadata=") < up.indexOf("file=@-"), "metadata part must precede the file part");
     assert.ok(up.endsWith(`'${EP}/files/upload'`), `got: ${up}`);
     assert.ok(Buffer.isBuffer(c1.child.stdin.data), "file bytes must ride ssh stdin as a Buffer");
@@ -99,7 +96,6 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     assert.equal(fake.calls.length, 3);
   }
 
-  ts("before: / --- sandbox_push: 502 warmup on the first upload attemp");
   // --- sandbox_push: 502 warmup on the first upload attempt, then ok -----
   {
     const src = join(workdir, "retry.txt");
@@ -130,7 +126,6 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     assert.equal(fake.calls.length, 4);
   }
 
-  ts("before: / --- sandbox_pull: small file, single base64 read ------");
   // --- sandbox_pull: small file, single base64 read -----------------------
   {
     const content = Buffer.from("hello pull");
@@ -175,6 +170,7 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     // call 5: host temp cleanup (finally, success path)
     let c5 = last();
     assert.equal(cmdOf(c5), `rm -f '${tmp}'`);
+    drive(c5.child);
     const r = await p;
     assert.equal(
       textOf(r),
@@ -184,7 +180,6 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     assert.equal(fake.calls.length, 6);
   }
 
-  ts("before: / --- sandbox_pull: long file, chunked base64 (32 000-cha");
   // --- sandbox_pull: long file, chunked base64 (32 000-char cut reads) ----
   {
     const content = Buffer.alloc(30_000); // 40 000 base64 chars -> 2 chunks
@@ -224,6 +219,7 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     // cleanup
     let c6 = last();
     assert.equal(cmdOf(c6), `rm -f '${tmp}'`);
+    drive(c6.child);
     const r = await p;
     assert.match(textOf(r), /^pulled \/opt\/big\.bin -> .* bytes=30000 chunks=2\nsha256_local=[0-9a-f]{64} sha256_remote=[0-9a-f]{64} match=true$/);
     assert.deepEqual(readFileSync(dest), content);
@@ -231,7 +227,6 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     assert.equal(fake.calls.length, 7);
   }
 
-  ts("before: / --- sandbox_pull: sha256 mismatch -> FAILED with receip");
   // --- sandbox_pull: sha256 mismatch -> FAILED with receipt, no write -----
   {
     const content = Buffer.from("corrupt me");
@@ -263,6 +258,7 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     // host temp cleanup still issued on the failure path
     let c5 = last();
     assert.equal(cmdOf(c5), `rm -f '${tmp}'`);
+    drive(c5.child);
     const r = await p;
     assert.equal(
       textOf(r),
@@ -272,5 +268,4 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     assert.ok(!existsSync(dest), "destination must not be created on mismatch");
     assert.equal(fake.calls.length, 6);
   }
-  ts("END of test callback");
 });
