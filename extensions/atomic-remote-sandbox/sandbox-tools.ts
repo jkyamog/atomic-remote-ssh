@@ -21,6 +21,7 @@ import {
   classifyAttempt,
 } from "./commands.ts";
 import { resolveEndpoint, withRetry } from "./execd.ts";
+import { registerFileTools } from "./file-tools.ts";
 
 const mid = (text) => ({ content: [{ type: "text", text }] });
 const apiKeyOf = (params) => params.api_key ?? DEFAULT_API_KEY;
@@ -174,4 +175,8 @@ export function registerSandboxTools(pi, deps) {
       }
     },
   });
+
+  // File-transfer tools (sandbox_push / sandbox_pull) share the same
+  // transport and retry knobs; registered after the lifecycle tools.
+  registerFileTools(pi, deps);
 }

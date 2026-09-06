@@ -37,7 +37,7 @@ test("sandbox-tools: registration, command shapes, and retry flow", async (t) =>
 
   assert.deepEqual(
     registered.map((tool) => tool.name),
-    ["sandbox_list", "sandbox_create", "sandbox_exec", "sandbox_destroy"],
+    ["sandbox_list", "sandbox_create", "sandbox_exec", "sandbox_destroy", "sandbox_push", "sandbox_pull"],
   );
   const byName = Object.fromEntries(registered.map((tool) => [tool.name, tool]));
   const last = () => fake.calls[fake.calls.length - 1];
