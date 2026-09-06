@@ -6,7 +6,7 @@ extensions. Two extensions ship in this repo, both over the same SSH transport:
 1. **atomic-remote-ssh** — remote execution over SSH. Two modes load at the same time:
    - **Additive tools** — `remote_bash`, `remote_read`, `remote_write`: each call carries its own `host` (and optional `cwd`), so concurrent stages may target different machines with no shared state.
    - **Transparent routing** — `ssh_connect` / `ssh_disconnect`: this session's built-in `read`/`write`/`edit`/`bash` tools are transparently routed to the remote host, keyed per session. Sessions that never connect keep plain local tools.
-2. **atomic-remote-sandbox** — OpenSandbox lifecycle + command execution. Four additive tools, each call carrying its own `host` (the OpenSandbox lifecycle manager is loopback-only at `127.0.0.1:8090` on that host).
+2. **atomic-remote-sandbox** — OpenSandbox lifecycle, command execution, and file transfer. Six additive tools, each call carrying its own `host` (the OpenSandbox lifecycle manager is loopback-only at `127.0.0.1:8090` on that host).
 
 Auth rides the ssh-agent sidecar (`SSH_AUTH_SOCK` is inherited from the launcher env); keys never enter the container. ControlMaster multiplexing keeps per-call latency low. The sandbox extension reuses the ssh transport (`createSshRunner`) — there is no duplicate ssh layer.
 
@@ -20,7 +20,7 @@ atomic-remote-sandbox.ts    # entry: registerRemoteSandbox
 extensions/
   atomic-remote-ssh/        # ssh.ts, targets.ts, paths.ts, commands.ts, ops.ts,
                             #   remote-tools.ts, transparent-tools.ts
-  atomic-remote-sandbox/    # commands.ts, sandbox-tools.ts
+  atomic-remote-sandbox/    # commands.ts, execd.ts, sandbox-tools.ts, file-tools.ts
 test/                       # node --test (spawner injected, no real ssh)
 ```
 
@@ -38,13 +38,15 @@ Output over 40 000 characters is capped to the first 12 000 + `\n...[truncated].
 
 ## atomic-remote-sandbox
 
-Four additive tools against the OpenSandbox lifecycle manager (`127.0.0.1:8090` on the target host). Auth is the `OPEN-SANDBOX-API-KEY` header (default `poc-t13-nyx`; override per call with `api_key`).
+Six additive tools against the OpenSandbox lifecycle manager (`127.0.0.1:8090` on the target host). Auth is the `OPEN-SANDBOX-API-KEY` header (default `poc-t13-nyx`; override per call with `api_key`).
 
 | Tool | Parameters | Notes |
 |---|---|---|
 | `sandbox_list` | `host`, `api_key?` | `GET /v1/sandboxes`; returns the raw manager JSON |
 | `sandbox_create` | `host`, `image`, `cpu?`, `memory?`, `timeout?`, `name?`, `api_key?` | `POST /v1/sandboxes`; defaults `cpu=500m`, `memory=512Mi`, `timeout=900`, `name=atomic-sandbox`; 1800 s ssh timeout (long docker pulls) |
 | `sandbox_exec` | `host`, `sandbox_id`, `command`, `api_key?` | resolves the server-proxied execd endpoint (`GET /v1/sandboxes/{id}/endpoints/44772?use_server_proxy=true`), then `POST {endpoint}/command`; concatenates the SSE `stdout` stream and reports `execution_complete` |
+| `sandbox_push` | `host`, `sandbox_id`, `local_path`, `remote_path`, `mode?`, `owner?`, `group?`, `api_key?` | `POST {endpoint}/files/upload` multipart — metadata JSON part + file part fed through the ssh leg's stdin; then `GET /files/info` must report the local byte length; 120 s ssh timeout |
+| `sandbox_pull` | `host`, `sandbox_id`, `remote_path`, `local_path`, `api_key?` | `GET {endpoint}/files/download` into a host-side temp file, bytes travel back base64-armored (32 000-char chunks when long), sha256-checked against the host-side hash, written locally as tmp + rename; the host temp is removed on every path; 120 s ssh timeout |
 | `sandbox_destroy` | `host`, `sandbox_id`, `api_key?` | `DELETE /v1/sandboxes/{id}`, then re-lists to confirm the id is gone |
 
 ### The create payload
@@ -60,6 +62,28 @@ The `entrypoint` is a no-op keep-alive loop (`while :; do sleep 3600; done`) so 
 ### Execd warmup retry (never fail fast)
 
 The gVisor execd proxy returns `502` (or an empty stream) until it is warm. `sandbox_exec` therefore **never fails fast on the first attempt**: it retries up to **5 attempts, 5 s apart**, on a `502`/`5xx`/no-status response or an empty `2xx` stream. A `3xx`/`4xx` is a definitive client error and fails fast (no retry). Each attempt is observable via curl's `-w '\n__HTTP_CODE__:%{http_code}'` write-out.
+
+The same shared helper backs `sandbox_push` and `sandbox_pull`; their `/files` calls carry no SSE, so the verdict is the status tag alone: `2xx` ok, `5xx`/no-status retry, `3xx`/`4xx` fail fast.
+
+### File transfer (`sandbox_push` / `sandbox_pull`)
+
+The OpenSandbox execd files API does the file semantics; the tools only adapt transport (server-proxied endpoint + the warmup retry above).
+
+`sandbox_push` uploads a controller-side file. `mode` is the octal permission digits expressed as a decimal int (e.g. `644`, `755`); when omitted it defaults to `755` if the source has any execute bit, else `644`. After upload, `GET /files/info` must report the local byte length or the call fails.
+
+```
+sandbox_push(host="user@example.host", sandbox_id="sbx_...", local_path="./build/app.bin", remote_path="/app/app.bin", mode=755)
+# -> pushed ./build/app.bin -> /app/app.bin bytes=48231 mode=755
+# local=48231 remote=48231
+```
+
+`sandbox_pull` downloads a sandbox file. The ssh leg returns utf8 text, so the host-side bytes are base64-armored — one read when short, 32 000-char chunks otherwise (the runner caps stdout at 40 000 chars) — then sha256-verified against the host-side hash and written atomically (tmp + rename, never partial):
+
+```
+sandbox_pull(host="user@example.host", sandbox_id="sbx_...", remote_path="/var/log/app.log", local_path="./out/app.log")
+# -> pulled /var/log/app.log -> ./out/app.log bytes=1823 chunks=1
+# sha256_local=<hex> sha256_remote=<hex> match=true
+```
 
 ## Install
 
@@ -154,12 +178,23 @@ sandbox_destroy(host="user@example.host", sandbox_id="sbx_...")
 # -> destroyed sbx_... (confirmed gone)
 ```
 
+Sandbox file transfer:
+
+```
+sandbox_push(host="user@example.host", sandbox_id="sbx_...", local_path="./config.json", remote_path="/app/config.json")
+# -> pushed ./config.json -> /app/config.json bytes=512 mode=644
+# local=512 remote=512
+sandbox_pull(host="user@example.host", sandbox_id="sbx_...", remote_path="/tmp/report.txt", local_path="./out/report.txt")
+# -> pulled /tmp/report.txt -> ./out/report.txt bytes=8734 chunks=1
+# sha256_local=<hex> sha256_remote=<hex> match=true
+```
+
 ## Development
 
 - Tests: `node --test` from the repo root (node ≥ 22.18 with native type stripping). No network, no real ssh — the spawner is injected. `node --test test/` is NOT supported on node 22 (the directory is treated as an entry module); use `node --test` or a glob.
-- The core modules (`atomic-remote-ssh/{ssh,targets,paths,commands,ops}.ts` and `atomic-remote-sandbox/commands.ts`) import neither `typebox` nor `@bastani/atomic`, so they unit-test under plain `node --test`. Tool-registration tests self-skip when `typebox` is not resolvable in the test environment.
+- The core modules (`atomic-remote-ssh/{ssh,targets,paths,commands,ops}.ts` and `atomic-remote-sandbox/{commands,execd}.ts`) import neither `typebox` nor `@bastani/atomic`, so they unit-test under plain `node --test`. Tool-registration tests self-skip when `typebox` is not resolvable in the test environment.
 - Deep-module design:
   - `atomic-remote-ssh`: `ssh.ts` (transport, injectable spawner), `targets.ts` (per-session target registry), `paths.ts` (local→remote path mapping), `commands.ts` (remote shell command construction + clamps), `ops.ts` (transparent-mode operations bundles).
-  - `atomic-remote-sandbox`: `commands.ts` (curl command construction + SSE/endpoint parsing + retry classification), `sandbox-tools.ts` (the four typebox tools, sharing the ssh transport).
+  - `atomic-remote-sandbox`: `commands.ts` (curl command construction + SSE/endpoint parsing + retry classification + file-transfer command builders), `execd.ts` (shared endpoint resolution + warmup retry), `sandbox-tools.ts` (the four lifecycle typebox tools, sharing the ssh transport), `file-tools.ts` (`sandbox_push` / `sandbox_pull`).
   - Each is a small interface hiding one concern; the two entries wire the tools to `createSshRunner()`.
 - License: MIT (see `LICENSE`).
