@@ -44,7 +44,7 @@ Six additive tools against the OpenSandbox lifecycle manager (`127.0.0.1:8090` o
 |---|---|---|
 | `sandbox_list` | `host`, `api_key?` | `GET /v1/sandboxes`; returns the raw manager JSON |
 | `sandbox_create` | `host`, `image`, `cpu?`, `memory?`, `timeout?`, `name?`, `api_key?` | `POST /v1/sandboxes`; defaults `cpu=500m`, `memory=512Mi`, `timeout=900`, `name=atomic-sandbox`; 1800 s ssh timeout (long docker pulls) |
-| `sandbox_exec` | `host`, `sandbox_id`, `command`, `api_key?` | resolves the server-proxied execd endpoint (`GET /v1/sandboxes/{id}/endpoints/44772?use_server_proxy=true`), then `POST {endpoint}/command`; concatenates the SSE `stdout` stream and reports `execution_complete` |
+| `sandbox_exec` | `host`, `sandbox_id`, `command`, `api_key?` | resolves the server-proxied execd endpoint (`GET /v1/sandboxes/{id}/endpoints/44772?use_server_proxy=true`), then `POST {endpoint}/command`; concatenates the execd event stream's `stdout`/`stderr` text and reports `execution_complete` |
 | `sandbox_push` | `host`, `sandbox_id`, `local_path`, `remote_path`, `mode?`, `owner?`, `group?`, `api_key?` | `POST {endpoint}/files/upload` multipart — metadata JSON part + file part fed through the ssh leg's stdin; then `GET /files/info` must report the local byte length; 120 s ssh timeout |
 | `sandbox_pull` | `host`, `sandbox_id`, `remote_path`, `local_path`, `api_key?` | `GET {endpoint}/files/download` into a host-side temp file, bytes travel back base64-armored (32 000-char chunks when long), sha256-checked against the host-side hash, written locally as tmp + rename; the host temp is removed on every path; 120 s ssh timeout |
 | `sandbox_destroy` | `host`, `sandbox_id`, `api_key?` | `DELETE /v1/sandboxes/{id}`, then re-lists to confirm the id is gone |
@@ -61,9 +61,9 @@ The `entrypoint` is a no-op keep-alive loop (`while :; do sleep 3600; done`) so 
 
 ### Execd warmup retry (never fail fast)
 
-The gVisor execd proxy returns `502` (or an empty stream) until it is warm. `sandbox_exec` therefore **never fails fast on the first attempt**: it retries up to **5 attempts, 5 s apart**, on a `502`/`5xx`/no-status response or an empty `2xx` stream. A `3xx`/`4xx` is a definitive client error and fails fast (no retry). Each attempt is observable via curl's `-w '\n__HTTP_CODE__:%{http_code}'` write-out.
+A cold gVisor execd proxy answers `502 BACKEND_CONNECTION_FAILED` (or no status) on every proxied endpoint until warm, and its `2xx` stream carries no events. Every executed command ends in an `execution_complete` event — even a no-output one — so a `2xx` stream with no execution events is the "not ready" signal. `sandbox_exec` therefore **never fails fast on the first attempt**: it retries up to **5 attempts, 5 s apart**, on a `5xx`/no-status response or a `2xx` stream with no execution events. A `3xx`/`4xx` is a definitive client error and fails fast (no retry). Each attempt is observable via curl's `-w '\n__HTTP_CODE__:%{http_code}'` write-out.
 
-The same shared helper backs `sandbox_push` and `sandbox_pull`; their `/files` calls carry no SSE, so the verdict is the status tag alone: `2xx` ok, `5xx`/no-status retry, `3xx`/`4xx` fail fast.
+The same shared helper backs `sandbox_push` and `sandbox_pull`; their `/files` calls carry no execd events, so the verdict is the status tag alone: `2xx` ok, `5xx`/no-status retry, `3xx`/`4xx` fail fast.
 
 ### File transfer (`sandbox_push` / `sandbox_pull`)
 

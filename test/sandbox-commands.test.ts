@@ -15,6 +15,7 @@ import {
   destroyCommand,
   splitHttpCode,
   parseSse,
+  curlFormValue,
   classifyAttempt,
   extractEndpoint,
   normalizeEndpointUrl,
@@ -144,6 +145,47 @@ test("parseSse: ignores event: and id: lines", () => {
   assert.equal(p.stdout, "x");
 });
 
+test("parseSse: bare-JSON execd framing (no data: prefix, blank-line separated) is parsed", () => {
+  const p = parseSse(
+    '{"type":"init","timestamp":1}\n\n{"type":"stdout","text":"line1\\n"}\n\n{"type":"stdout","text":"line2"}\n\n{"type":"execution_complete"}\n',
+  );
+  assert.equal(p.stdout, "line1\nline2");
+  assert.equal(p.executionComplete, true);
+});
+
+test("parseSse: a no-output command still carries execution_complete", () => {
+  const p = parseSse('{"type":"execution_complete"}\n');
+  assert.equal(p.stdout, "");
+  assert.equal(p.executionComplete, true);
+});
+
+test("parseSse: mixed data:-framed and bare JSON lines both parse", () => {
+  const p = parseSse('data: {"type":"stdout","text":"a"}\n{"type":"stderr","text":"b"}\n');
+  assert.equal(p.stdout, "a");
+  assert.equal(p.stderr, "b");
+});
+
+test("parseSse: bare-JSON malformed lines are skipped, like data:-framed ones", () => {
+  assert.equal(parseSse("not json\n\n{bad\n\n{\"type\":\"stdout\",\"text\":\"ok\"}\n").stdout, "ok");
+});
+
+test("curlFormValue: quotes+escapes on ';', '\"' or '\\'; leaves plain values verbatim", () => {
+  assert.equal(curlFormValue("a;b.txt"), '"a;b.txt"');
+  assert.equal(curlFormValue('we"ird.txt'), '"we\\"ird.txt"');
+  assert.equal(curlFormValue("a\\b.txt"), '"a\\\\b.txt"');
+  assert.equal(curlFormValue("a b.txt"), "a b.txt");
+  assert.equal(curlFormValue("it's here.txt"), "it's here.txt");
+  assert.equal(curlFormValue("plain.txt"), "plain.txt");
+});
+
+test("curlFormValue: the metadata JSON round-trips through curl's unescape", () => {
+  // emulate curl 8.21's quoted-form semantics (verified live with a capture probe):
+  // strip the wrapping quotes, unescape \" and \\
+  const unescape = (v) => v.slice(1, -1).replace(/\\(["\\])/g, "$1");
+  assert.equal(unescape(curlFormValue('{"path":"/tmp/a; b","mode":644}')), '{"path":"/tmp/a; b","mode":644}');
+  assert.equal(unescape(curlFormValue('{"path":"/tmp/we\\"ird; q","mode":644}')), '{"path":"/tmp/we\\"ird; q","mode":644}');
+});
+
 test("classifyAttempt: 2xx with output or completion is ok", () => {
   assert.equal(classifyAttempt("200", P({ stdout: "x" })), "ok");
   assert.equal(classifyAttempt("200", P({ stderr: "y" })), "ok");
@@ -152,6 +194,18 @@ test("classifyAttempt: 2xx with output or completion is ok", () => {
 
 test("classifyAttempt: empty 2xx stream is warmup (execd not ready)", () => {
   assert.equal(classifyAttempt("200", P()), "warmup");
+});
+
+test("classifyAttempt: a bare-JSON execd stream that executed is ok, even without output", () => {
+  // Live-captured gVisor execd framing: bare JSON lines, no `data:` prefix.
+  // A no-output command still ends in execution_complete -> a run that happened.
+  const bare = '{"type":"init","timestamp":1}\n\n{"type":"execution_complete"}\n';
+  assert.equal(classifyAttempt("200", parseSse(bare)), "ok");
+});
+
+test("classifyAttempt: a cold proxy emits no events — 2xx empty stream is still warmup", () => {
+  assert.equal(classifyAttempt("200", parseSse("")), "warmup");
+  assert.equal(classifyAttempt(null, parseSse("")), "warmup");
 });
 
 test("classifyAttempt: no status or any 5xx is warmup", () => {

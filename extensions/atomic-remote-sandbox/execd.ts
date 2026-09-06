@@ -1,10 +1,12 @@
 /**
  * Shared execd helpers for the OpenSandbox tools: server-proxied endpoint
- * resolution + the warmup retry loop. The gVisor execd proxy returns 502
- * (or no status) until warm on every proxied endpoint — /command and
- * /files alike — so the retry policy is shared. sandbox_exec classifies
- * attempts over the SSE stream (classifyAttempt + parseSse); the file
- * tools classify on the status tag alone (classifySimple). This module
+ * resolution + the warmup retry loop. The gVisor execd proxy answers 502
+ * BACKEND_CONNECTION_FAILED (or no status) while cold on every proxied
+ * endpoint — /command and /files alike — so the retry policy is shared.
+ * sandbox_exec classifies attempts over the execd event stream
+ * (classifyAttempt + parseSse; every executed command ends in an
+ * execution_complete event, even a no-output one); the file tools classify
+ * on the status tag alone (classifySimple). This module
  * imports only ./commands.ts and the ssh transport's capOutput — no cycles.
  */
 

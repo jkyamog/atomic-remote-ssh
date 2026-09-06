@@ -79,7 +79,7 @@ test("sandbox file tools: registration and push/pull flows", async (t) => {
     let c1 = last();
     const up = cmdOf(c1);
     assert.match(up, /^curl -sS -X POST /);
-    assert.ok(up.includes(`-F 'metadata={"path":"/opt/a.txt","mode":755};type=application/json;filename=metadata'`), `got: ${up}`);
+    assert.ok(up.includes(`-F 'metadata="{\\"path\\":\\"/opt/a.txt\\",\\"mode\\":755}";type=application/json;filename=metadata'`), `got: ${up}`);
     assert.ok(up.includes(`-F 'file=@-;type=application/octet-stream;filename=a.txt'`), `got: ${up}`);
     assert.ok(up.indexOf("metadata=") < up.indexOf("file=@-"), "metadata part must precede the file part");
     assert.ok(up.endsWith(`'${EP}/files/upload'`), `got: ${up}`);

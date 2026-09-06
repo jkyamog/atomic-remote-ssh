@@ -92,9 +92,11 @@ export function registerSandboxTools(pi, deps) {
     name: "sandbox_exec",
     description:
       "Run a command in an OpenSandbox via its server-proxied execd endpoint. " +
-      "Concatenates the stdout SSE stream and reports execution_complete. " +
-      `Retries up to ${EXEC_MAX_ATTEMPTS} attempts, ${EXEC_RETRY_DELAY_MS / 1000}s apart, on 502 or an ` +
-      "empty stream (gVisor execd warmup — never fails fast on the first attempt).",
+      "Concatenates the execd stream's stdout/stderr events and reports execution_complete. " +
+      `Retries up to ${EXEC_MAX_ATTEMPTS} attempts, ${EXEC_RETRY_DELAY_MS / 1000}s apart, on 5xx/no-status ` +
+      "(cold gVisor execd proxy: 502 BACKEND_CONNECTION_FAILED) or a 2xx stream with no execution " +
+      "events at all — every executed command ends in an execution_complete event, even when it " +
+      "produces no output. Never fails fast on the first attempt.",
     parameters: Type.Object({
       host: Type.String({ description: HOST_DESC }),
       sandbox_id: Type.String({ description: "Sandbox id" }),

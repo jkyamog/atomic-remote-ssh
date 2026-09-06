@@ -61,7 +61,7 @@ test("uploadCommand: multipart POST, metadata part first, file=@- stdin part, fi
   const meta = buildFileMetadata("/opt/a.py", 755);
   assert.equal(
     uploadCommand("k", EP, meta, "a.py"),
-    `curl -sS -X POST -H 'OPEN-SANDBOX-API-KEY: k' -F 'metadata=${meta};type=application/json;filename=metadata' -F 'file=@-;type=application/octet-stream;filename=a.py' ${W_TAG} '${EP}/files/upload'`,
+    `curl -sS -X POST -H 'OPEN-SANDBOX-API-KEY: k' -F 'metadata="{\\"path\\":\\"/opt/a.py\\",\\"mode\\":755}";type=application/json;filename=metadata' -F 'file=@-;type=application/octet-stream;filename=a.py' ${W_TAG} '${EP}/files/upload'`,
   );
   // default file-part filename keeps the pure builder standalone-runnable
   assert.ok(uploadCommand("k", EP, meta).includes("filename=file"), "default filename=file missing");
@@ -72,8 +72,27 @@ test("uploadCommand: multipart POST, metadata part first, file=@- stdin part, fi
 
 test("uploadCommand: double-quoted metadata survives single-quoting; a single quote in the path is q-escaped", () => {
   const cmd = uploadCommand("k", EP, buildFileMetadata("/tmp/a'b.py", 644), "a'b.py");
-  assert.ok(cmd.includes(`-F 'metadata={"path":"/tmp/a'\\''b.py","mode":644};type=application/json;filename=metadata'`), `got: ${cmd}`);
+  assert.ok(cmd.includes(`-F 'metadata="{\\"path\\":\\"/tmp/a'\\''b.py\\",\\"mode\\":644}";type=application/json;filename=metadata'`), `got: ${cmd}`);
   assert.ok(cmd.includes(`filename=a'\\''b.py'`), `got: ${cmd}`);
+});
+
+test("uploadCommand: a ';' in the path rides curl's quoted -F form on both parts (curl truncates an unquoted ';')", () => {
+  const cmd = uploadCommand("k", EP, buildFileMetadata("/opt/a;b.py", 644), "a;b.py");
+  assert.ok(
+    cmd.includes(`metadata="{\\"path\\":\\"/opt/a;b.py\\",\\"mode\\":644}";type=application/json;filename=metadata`),
+    `got: ${cmd}`,
+  );
+  assert.ok(cmd.includes(`-F 'file=@-;type=application/octet-stream;filename="a;b.py"'`), `got: ${cmd}`);
+});
+
+test("uploadCommand: a double quote in the basename rides the quoted+escaped -F form", () => {
+  const cmd = uploadCommand("k", EP, buildFileMetadata('/opt/we"ird.txt', 644), 'we"ird.txt');
+  assert.ok(cmd.includes(`filename="we\\"ird.txt"`), `got: ${cmd}`);
+});
+
+test("uploadCommand: a space basename stays unquoted in the -F value", () => {
+  const cmd = uploadCommand("k", EP, buildFileMetadata("/opt/a b.txt", 644), "a b.txt");
+  assert.ok(cmd.includes(`-F 'file=@-;type=application/octet-stream;filename=a b.txt'`), `got: ${cmd}`);
 });
 
 test("fileInfoCommand: GET with URL-encoded path", () => {

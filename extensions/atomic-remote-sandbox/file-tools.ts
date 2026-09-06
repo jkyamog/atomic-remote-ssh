@@ -5,8 +5,8 @@
  * GET /files/info); this module only adapts transport — every request is a
  * curl on the target host over the shared ssh leg, against the
  * server-proxied execd endpoint (the lifecycle manager is loopback-only).
- * Warmup retry (502 / no status) covers the /files endpoints the same way
- * it covers /command (see ./execd.ts).
+ * Warmup retry (502 BACKEND_CONNECTION_FAILED / no status) covers the /files
+ * endpoints the same way it covers /command (see ./execd.ts).
  *
  * Push: the local bytes ride the ssh leg's stdin into `curl -F 'file=@-...'`
  * (binary-safe). Pull: the ssh leg returns utf8 text, so the host-side
@@ -51,7 +51,7 @@ const AUX_TIMEOUT_MS = 60_000; // host-side wc / sha256 / base64 reads
 const SHORT_TIMEOUT_MS = 30_000; // endpoint / files-info / temp cleanup
 
 /**
- * The /files endpoints carry no SSE, so a warmup verdict is the status tag
+ * The /files endpoints carry no events, so a warmup verdict is the status tag
  * alone: 2xx ok, 5xx / no status retry, 3xx/4xx fail fast.
  */
 const classify = (code) => classifySimple(code);
@@ -65,10 +65,23 @@ export function registerFileTools(pi, deps) {
     name: "sandbox_push",
     description:
       "Push a controller-side file into an OpenSandbox via its server-proxied " +
-      "execd files API: POST {endpoint}/files/upload (metadata part + file part " +
-      "from ssh stdin), then verify via GET /files/info that the remote size " +
-      "matches. Retries up to 5 attempts, 5 s apart, on 502/no-status " +
-      "(gVisor execd warmup).",
+      "execd files API. Wire format: multipart/form-data POST {endpoint}/files/upload " +
+      "with two parts, BOTH carrying a filename — execd reads the parts via FormFile, " +
+      "which ignores bare form fields, so a filename-less metadata part 400s " +
+      "INVALID_FILE_METADATA: (1) metadata part (application/json, filename=metadata) " +
+      "= {\"path\", \"mode\", \"owner\"?, \"group\"?}; (2) file part read from the ssh " +
+      "leg's stdin (file=@-, binary-safe), filename=basename(remote_path). Both the " +
+      "metadata JSON and the filename ride curl's double-quoted -F form whenever they " +
+      "contain a ';', a double quote, or a backslash — curl truncates an unquoted -F " +
+      "value at the first unquoted ';' (live: a ';'-path 400s INVALID_FILE_METADATA " +
+      "with a half-JSON part). mode is the octal permission " +
+      "digits as a decimal int (e.g. 644 or 755); default: 755 if the source has any " +
+      "execute bit, else 644. After upload, GET /files/info must report the local byte " +
+      "length. Retries up to 5 attempts, 5 s apart, on 5xx/no-status (cold gVisor execd " +
+      "proxy: 502 BACKEND_CONNECTION_FAILED). " +
+      "Example: sandbox_push(host=\"user@example.host\", sandbox_id=\"sbx_1\", " +
+      "local_path=\"./build/app.bin\", remote_path=\"/app/app.bin\", mode=755) -> " +
+      "\"pushed ./build/app.bin -> /app/app.bin bytes=48231 mode=755\\nlocal=48231 remote=48231\"",
     parameters: Type.Object({
       host: Type.String({ description: HOST_DESC }),
       sandbox_id: Type.String({ description: "Sandbox id" }),
@@ -150,10 +163,19 @@ export function registerFileTools(pi, deps) {
     name: "sandbox_pull",
     description:
       "Pull a sandbox file to the controller via its server-proxied execd files " +
-      "API: GET {endpoint}/files/download into a host-side temp file, then the " +
-      "bytes ride the ssh leg base64-armored (32 000-char chunks when long) and " +
-      "are sha256-verified before an atomic local write (tmp + rename). Retries " +
-      "up to 5 attempts, 5 s apart, on 502/no-status (gVisor execd warmup).",
+      "API: GET {endpoint}/files/download into a host-side temp file " +
+      "(/tmp/.atomic-pull-<rand>), then the bytes ride back the ssh leg " +
+      "base64-armored — one read when short (<= 24 000 base64 chars), 32 000-char " +
+      "chunks otherwise, because the ssh runner caps output at 40 000 chars and " +
+      "each chunk stays safely under it. The decoded bytes are sha256-verified " +
+      "against the host-side sha256 before an atomic local write (tmp file + " +
+      "rename in the destination directory, never partial; no destination file is " +
+      "created on a mismatch). The host temp file is removed on every path " +
+      "(success, mismatch, error). Retries up to 5 attempts, 5 s apart, on " +
+      "5xx/no-status (cold gVisor execd proxy: 502 BACKEND_CONNECTION_FAILED). " +
+      "Example: sandbox_pull(host=\"user@example.host\", sandbox_id=\"sbx_1\", " +
+      "remote_path=\"/var/log/app.log\", local_path=\"./out/app.log\") -> " +
+      "\"pulled /var/log/app.log -> ./out/app.log bytes=1823 chunks=1\\nsha256_local=<hex> sha256_remote=<hex> match=true\"",
     parameters: Type.Object({
       host: Type.String({ description: HOST_DESC }),
       sandbox_id: Type.String({ description: "Sandbox id" }),

@@ -74,7 +74,7 @@ export function endpointCommand(apiKey, sandboxId) {
 const W_HTTP_CODE = "\\n__HTTP_CODE__:%{http_code}";
 
 /**
- * POST {endpoint}/command — run a command, stream SSE, tag the status code.
+ * POST {endpoint}/command — run a command, stream the execd events, tag the status code.
  * Deliberately NOT `-f`: a 502 (execd warmup) still completes the transfer,
  * so the status code is observable in the write-out for the retry decision.
  */
@@ -100,21 +100,28 @@ export function splitHttpCode(text) {
 }
 
 /**
- * Parse an SSE command stream into aggregate output. Each `data:` line is
- * one ServerStreamEvent JSON object:
- *   { type: init|status|error|stdout|stderr|result|execution_complete|...,
+ * Parse the execd command stream into aggregate output. Two framings are
+ * tolerated:
+ *   - the gVisor execd proxy's real framing: bare JSON event lines,
+ *     blank-line separated, no `data:` prefix (captured live);
+ *   - classic SSE `data: {...}` lines (kept for framed streams).
+ * Event shape:
+ *   { type: init|ping|status|error|stdout|stderr|result|execution_complete|...,
  *     text?: string, results?: object, error?: object }
  * stdout/stderr concatenate the `text` of the matching events;
- * executionComplete is set by the `execution_complete` event.
+ * executionComplete is set by the `execution_complete` event, which every
+ * executed command emits — even when it produces no output. A cold proxy
+ * emits nothing (and answers 502), so an event-less 2xx stream is still the
+ * "not ready" signal (see classifyAttempt).
  */
 export function parseSse(text) {
   const out = { stdout: "", stderr: "", executionComplete: false, results: null, error: null };
   for (const raw of String(text).split(/\r?\n/)) {
-    if (!raw.startsWith("data:")) continue;
-    const data = raw.slice(5).trim();
-    if (!data) continue;
+    let line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("data:")) line = line.slice(5).trim();
     let ev;
-    try { ev = JSON.parse(data); } catch { continue; }
+    try { ev = JSON.parse(line); } catch { continue; }
     if (!ev || typeof ev !== "object") continue;
     if (ev.type === "stdout" && typeof ev.text === "string") out.stdout += ev.text;
     else if (ev.type === "stderr" && typeof ev.text === "string") out.stderr += ev.text;
@@ -126,10 +133,15 @@ export function parseSse(text) {
 }
 
 /**
- * Classify one sandbox_exec attempt:
- *  - "ok"      2xx with output or an execution_complete event
- *  - "warmup"  5xx / no status (proxy not ready) or an empty 2xx stream
- *  - "error"   4xx (a definitive client error — fail fast, do not retry)
+ * Classify one sandbox_exec attempt (the body parsed via parseSse):
+ *  - "ok"      2xx carrying stdout/stderr or an execution_complete event —
+ *              every executed command ends in execution_complete, even a
+ *              no-output one, so a 2xx with events is always a run that
+ *              happened (no more "empty stream" misclassification)
+ *  - "warmup"  5xx / no status (cold gVisor execd proxy: 502
+ *              BACKEND_CONNECTION_FAILED) or a 2xx stream with no
+ *              execution events at all
+ *  - "error"   3xx/4xx (a definitive client error — fail fast, do not retry)
  */
 export function classifyAttempt(code, parsed) {
   const c = code ? parseInt(code, 10) : 0;
@@ -187,6 +199,23 @@ export function defaultMode(statMode) {
 }
 
 /**
+ * A curl -F value that survives curl's value parsing, shared by the
+ * metadata part's JSON and the file part's filename. curl splits -F values
+ * on unquoted `;` — truncating the value at the first one (live: a `;` in
+ * the remote path 400s with a half-JSON metadata part) — and inside
+ * double-quoted sections it unescapes `\"` -> `"` and `\\` -> `\`, while
+ * `'`, spaces, backticks, and `$` stay literal. So a value containing `;`,
+ * `"`, or `\` rides the quoted form: every `\` and `"` backslash-escaped,
+ * the whole value wrapped in double quotes. Plain values (spaces, `'`) keep
+ * the unquoted form. Verified against curl 8.21 with a local multipart
+ * capture probe.
+ */
+export function curlFormValue(value) {
+  const n = String(value);
+  return /[;\\"]/.test(n) ? `"${n.replace(/([\\"])/g, "\\$1")}"` : n;
+}
+
+/**
  * POST {endpoint}/files/upload — multipart/form-data, metadata part FIRST
  * (application/json), then the file part read from stdin (`file=@-`; the
  * local bytes ride the ssh leg's stdin). BOTH parts carry a filename:
@@ -194,13 +223,17 @@ export function defaultMode(statMode) {
  * filename-less metadata part fails with 400 INVALID_FILE_METADATA
  * ("metadata file is missing"). Mirrors the JS SDK wire format exactly
  * (filesystemAdapter.ts: name="metadata", filename="metadata"; name="file",
- * filename=basename(remote_path)). Deliberately NOT `-f`: a 502 (execd
+ * filename=basename(remote_path)). Both the metadata JSON and the file
+ * part's filename go through curlFormValue: curl truncates an -F value at
+ * the first unquoted `;`, so a `;` anywhere in the path would otherwise
+ * 400 with a half-JSON metadata part.
+ * Deliberately NOT `-f`: a 502 (execd
  * warmup) still completes the transfer, so the status code is observable
  * in the write-out for the retry decision.
  */
 export function uploadCommand(apiKey, endpointUrl, metadataJson, fileName = "file") {
-  const meta = q(`metadata=${metadataJson};type=application/json;filename=metadata`);
-  const file = q(`file=@-;type=application/octet-stream;filename=${fileName}`);
+  const meta = q(`metadata=${curlFormValue(metadataJson)};type=application/json;filename=metadata`);
+  const file = q(`file=@-;type=application/octet-stream;filename=${curlFormValue(fileName)}`);
   return `curl -sS -X POST ${apiKeyHeader(apiKey)} -F ${meta} -F ${file} -w '${W_HTTP_CODE}' ${q(endpointUrl + "/files/upload")}`;
 }
 
@@ -267,7 +300,7 @@ export function chunkRanges(totalLen, size = 32_000) {
 }
 
 /**
- * Classify a non-SSE execd attempt from the HTTP status tag alone:
+ * Classify a /files execd attempt from the HTTP status tag alone:
  *  - "ok"      2xx
  *  - "warmup"  5xx / no status (proxy not ready)
  *  - "error"   3xx/4xx (definitive — fail fast, do not retry)
