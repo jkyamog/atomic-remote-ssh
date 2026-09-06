@@ -8,7 +8,7 @@
  */
 
 /** Shell-quote for POSIX sh: `'` -> `'\''`. No command substitution inside. */
-const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+export const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 
 /** OpenSandbox lifecycle manager base URL (loopback-only by design). */
 export const MANAGER_BASE = "http://127.0.0.1:8090";
@@ -163,4 +163,113 @@ export function sleep(ms, signal) {
     const t = setTimeout(resolve, ms);
     if (signal) signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
   });
+}
+
+/**
+ * The exact upload metadata part (JSON.stringify preserves this key order
+ * and drops undefined owner/group): {"path":remotePath,"mode":mode,
+ * "owner":owner,"group":group}.
+ * mode is the octal permission digits as a decimal int (644 / 755) —
+ * never a raw stat.mode.
+ */
+export function buildFileMetadata(remotePath, mode, owner, group) {
+  return JSON.stringify({ path: remotePath, mode, owner, group });
+}
+
+/** stat.mode -> octal permission digits as a decimal int (0o755 -> 755). */
+export function modeToOctalInt(statMode) {
+  return Number((statMode & 0o777).toString(8));
+}
+
+/** Default upload mode from the source file: 755 if any execute bit, else 644. */
+export function defaultMode(statMode) {
+  return (statMode & 0o111) !== 0 ? 755 : 644;
+}
+
+/**
+ * POST {endpoint}/files/upload — multipart/form-data, metadata part FIRST
+ * (application/json), then the file part read from stdin (`file=@-`; the
+ * local bytes ride the ssh leg's stdin). Deliberately NOT `-f`: a 502
+ * (execd warmup) still completes the transfer, so the status code is
+ * observable in the write-out for the retry decision.
+ */
+export function uploadCommand(apiKey, endpointUrl, metadataJson) {
+  const meta = q(`metadata=${metadataJson};type=application/json`);
+  const file = q("file=@-;type=application/octet-stream");
+  return `curl -sS -X POST ${apiKeyHeader(apiKey)} -F ${meta} -F ${file} -w '${W_HTTP_CODE}' ${q(endpointUrl + "/files/upload")}`;
+}
+
+/** GET {endpoint}/files/info?path=... — file metadata after upload. */
+export function fileInfoCommand(apiKey, endpointUrl, remotePath) {
+  const url = endpointUrl + "/files/info?path=" + encodeURIComponent(remotePath);
+  return `curl -fsS ${apiKeyHeader(apiKey)} ${q(url)}`;
+}
+
+/**
+ * GET {endpoint}/files/download?path=... -> host-side temp file. Tagged with
+ * -w so a 502 (warmup) is still observable for the retry decision; on an
+ * HTTP error curl -f exits non-zero and leaves no (partial) temp content.
+ */
+export function downloadCommand(apiKey, endpointUrl, remotePath, tmpPath) {
+  const url = endpointUrl + "/files/download?path=" + encodeURIComponent(remotePath);
+  return `curl -fsS ${apiKeyHeader(apiKey)} ${q(url)} -o ${q(tmpPath)} -w '${W_HTTP_CODE}'`;
+}
+
+/** Host-side temp file name for a pull: /tmp/.atomic-pull-<rand> (rand alphanumeric). */
+export function hostTempPath(rand) {
+  return `/tmp/.atomic-pull-${rand}`;
+}
+
+/** Byte count of a host-side file (redirect form keeps the name out of stdout). */
+export function wcCommand(tmpPath) {
+  return `wc -c < ${q(tmpPath)}`;
+}
+
+/** Host-side sha256 of the temp file (hex digest only). */
+export function sha256Command(tmpPath) {
+  return `sha256sum ${q(tmpPath)} | cut -d' ' -f1`;
+}
+
+/** Full base64 of the host-side file, one line (no wrap, no newline). */
+export function base64Command(tmpPath) {
+  return `base64 -w0 ${q(tmpPath)}`;
+}
+
+/**
+ * One base64 chunk, chars [start..end] 1-based inclusive (cut -c semantics).
+ * Kept well under the ssh runner's 40 000-char output cap.
+ */
+export function base64ChunkCommand(tmpPath, start, end) {
+  return `base64 -w0 ${q(tmpPath)} | cut -c${start}-${end}`;
+}
+
+/** Remove the host-side temp file (idempotent; issued on every path). */
+export function cleanupCommand(tmpPath) {
+  return `rm -f ${q(tmpPath)}`;
+}
+
+/**
+ * 1-based inclusive [start, end] ranges covering totalLen chars in steps of
+ * size. totalLen 0 -> []; exact multiples end on the boundary; ragged last
+ * chunk clamps to totalLen.
+ */
+export function chunkRanges(totalLen, size = 32_000) {
+  const ranges = [];
+  for (let start = 1; start <= totalLen; start += size) {
+    ranges.push({ start, end: Math.min(start + size - 1, totalLen) });
+  }
+  return ranges;
+}
+
+/**
+ * Classify a non-SSE execd attempt from the HTTP status tag alone:
+ *  - "ok"      2xx
+ *  - "warmup"  5xx / no status (proxy not ready)
+ *  - "error"   3xx/4xx (definitive — fail fast, do not retry)
+ */
+export function classifySimple(code) {
+  const c = code ? parseInt(code, 10) : 0;
+  if (c >= 200 && c < 300) return "ok";
+  if (c === 0 || c >= 500) return "warmup";
+  return "error";
 }
