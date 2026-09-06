@@ -3,7 +3,8 @@
  * sandbox_destroy. Every call rides the shared ssh transport (deps.sshExec)
  * and hits the loopback lifecycle manager (127.0.0.1:8090) on the target
  * host. Style mirrors remote-tools.ts: typebox params, mid() result wrapper,
- * capOutput on big bodies.
+ * capOutput on big bodies. Endpoint resolution + the warmup retry loop are
+ * shared with the file-transfer tools via ./execd.ts.
  */
 
 import { Type } from "typebox";
@@ -14,16 +15,12 @@ import {
   EXEC_RETRY_DELAY_MS,
   listCommand,
   createCommand,
-  endpointCommand,
   postCommandCommand,
   destroyCommand,
-  splitHttpCode,
   parseSse,
   classifyAttempt,
-  extractEndpoint,
-  normalizeEndpointUrl,
-  sleep,
 } from "./commands.ts";
+import { resolveEndpoint, withRetry } from "./execd.ts";
 
 const mid = (text) => ({ content: [{ type: "text", text }] });
 const apiKeyOf = (params) => params.api_key ?? DEFAULT_API_KEY;
@@ -107,46 +104,42 @@ export function registerSandboxTools(pi, deps) {
       const apiKey = apiKeyOf(params);
 
       // 1. Resolve the server-proxied execd endpoint for this sandbox.
-      let endpointUrl;
-      try {
-        const r = await exec(params.host, endpointCommand(apiKey, params.sandbox_id), { signal, timeoutMs: 30_000 });
-        if (r.exitCode !== 0) return mid(`sandbox_exec FAILED (endpoint): ${r.stderr || `exit=${r.exitCode}`}`);
-        endpointUrl = normalizeEndpointUrl(extractEndpoint(r.stdout));
-        if (!endpointUrl) return mid(`sandbox_exec FAILED: no endpoint in response: ${capOutput(r.stdout).slice(0, 400)}`);
-      } catch (e) {
-        return mid(`sandbox_exec FAILED (endpoint): ${e instanceof Error ? e.message : String(e)}`);
-      }
+      const ep = await resolveEndpoint(exec, {
+        host: params.host,
+        apiKey,
+        sandboxId: params.sandbox_id,
+        signal,
+        tool: "sandbox_exec",
+      });
+      if (!ep.ok) return mid(ep.message);
 
       // 2. POST the command; retry on warmup (502 / empty stream).
-      const cmd = postCommandCommand(apiKey, endpointUrl, params.command);
-      let last = null;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        let r;
-        try {
-          r = await exec(params.host, cmd, { signal, timeoutMs: 60_000 });
-        } catch (e) {
-          return mid(`sandbox_exec FAILED: ${e instanceof Error ? e.message : String(e)}`);
+      const cmd = postCommandCommand(apiKey, ep.endpointUrl, params.command);
+      const r = await withRetry(exec, {
+        host: params.host,
+        cmd,
+        signal,
+        timeoutMs: 60_000,
+        maxAttempts,
+        retryDelayMs,
+        classify: (code, body) => classifyAttempt(code, parseSse(body)),
+      });
+      if (!r.ok) {
+        if (r.kind === "ssh") return mid(`sandbox_exec FAILED: ${r.message}`);
+        if (r.kind === "error") {
+          return mid(`sandbox_exec FAILED (http=${r.code}): ${capOutput(r.body || r.stderr).slice(0, 2_000)}`);
         }
-        const { body, code } = splitHttpCode(r.stdout);
-        const parsed = parseSse(body);
-        const verdict = classifyAttempt(code, parsed);
-        if (verdict === "ok") {
-          const out = [
-            parsed.stdout,
-            parsed.stderr ? `[stderr]\n${parsed.stderr}` : "",
-            parsed.error ? `[error] ${JSON.stringify(parsed.error)}` : "",
-          ].filter(Boolean).join("\n");
-          return mid(capOutput(`${out || "(no output)"}\n[execution_complete: ${parsed.executionComplete}]`));
-        }
-        if (verdict === "error") {
-          return mid(`sandbox_exec FAILED (http=${code}): ${capOutput(body || r.stderr).slice(0, 2_000)}`);
-        }
-        // warmup: remember and retry (if attempts remain)
-        last = { code, parsed, body, stderr: r.stderr };
-        if (attempt < maxAttempts) await sleep(retryDelayMs, signal);
+        const parsed = parseSse(r.body || "");
+        const detail = capOutput(`${parsed.stdout}${parsed.stderr}${r.body || ""}${r.stderr || ""}`);
+        return mid(`sandbox_exec FAILED after ${maxAttempts} attempts (last http=${r.code}): ${detail.slice(0, 2_000) || "no output"}`);
       }
-      const detail = capOutput(`${last.parsed.stdout}${last.parsed.stderr}${last.body || ""}${last.stderr || ""}`);
-      return mid(`sandbox_exec FAILED after ${maxAttempts} attempts (last http=${last.code}): ${detail.slice(0, 2_000) || "no output"}`);
+      const parsed = parseSse(r.body);
+      const out = [
+        parsed.stdout,
+        parsed.stderr ? `[stderr]\n${parsed.stderr}` : "",
+        parsed.error ? `[error] ${JSON.stringify(parsed.error)}` : "",
+      ].filter(Boolean).join("\n");
+      return mid(capOutput(`${out || "(no output)"}\n[execution_complete: ${parsed.executionComplete}]`));
     },
   });
 
