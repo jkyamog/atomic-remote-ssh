@@ -12,7 +12,7 @@ import {
   mkdirCommand,
   accessCommand,
   connectPrepareCommand,
-} from "../atomic-remote-ssh/commands.ts";
+} from "../extensions/atomic-remote-ssh/commands.ts";
 
 test("clampTimeoutSeconds: undefined->120, 0->5, 1000 pass-through, 5000->1800 (ms conversion stays in the tool layer)", () => {
   assert.equal(clampTimeoutSeconds(undefined), 120);

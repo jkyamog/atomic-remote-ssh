@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSshRunner } from "../atomic-remote-ssh/ssh.ts";
+import { createSshRunner } from "../extensions/atomic-remote-ssh/ssh.ts";
 import { createFakeSpawn } from "./fixtures/fake-spawn.ts";
 
 /**
@@ -14,7 +14,7 @@ import { createFakeSpawn } from "./fixtures/fake-spawn.ts";
 test("remote-tools: registered names, clamps, and frozen result strings", async (t) => {
   let registerAdditiveTools;
   try {
-    ({ registerAdditiveTools } = await import("../atomic-remote-ssh/remote-tools.ts"));
+    ({ registerAdditiveTools } = await import("../extensions/atomic-remote-ssh/remote-tools.ts"));
   } catch (e) {
     t.skip(`typebox not resolvable in this environment: ${e && e.message}`);
     return;

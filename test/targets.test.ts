@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sidOf, createTargetRegistry } from "../atomic-remote-ssh/targets.ts";
+import { sidOf, createTargetRegistry } from "../extensions/atomic-remote-ssh/targets.ts";
 
 test("sidOf precedence: sessionId -> sessionFile -> __global__; missing ctx is safe", () => {
   assert.equal(

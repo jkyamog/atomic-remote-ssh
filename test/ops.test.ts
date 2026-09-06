@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildOps } from "../atomic-remote-ssh/ops.ts";
-import { createSshRunner } from "../atomic-remote-ssh/ssh.ts";
+import { buildOps } from "../extensions/atomic-remote-ssh/ops.ts";
+import { createSshRunner } from "../extensions/atomic-remote-ssh/ssh.ts";
 import { createFakeSpawn } from "./fixtures/fake-spawn.ts";
 
 const T = { remote: "user@example-host", remoteCwd: "/home/user/remote" };

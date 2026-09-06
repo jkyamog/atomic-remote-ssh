@@ -14,10 +14,10 @@
  * ControlMaster multiplexing keeps per-call latency low.
  */
 
-import { createSshRunner } from "./atomic-remote-ssh/ssh.ts";
-import { createTargetRegistry } from "./atomic-remote-ssh/targets.ts";
-import { registerAdditiveTools } from "./atomic-remote-ssh/remote-tools.ts";
-import { registerTransparentTools } from "./atomic-remote-ssh/transparent-tools.ts";
+import { createSshRunner } from "./extensions/atomic-remote-ssh/ssh.ts";
+import { createTargetRegistry } from "./extensions/atomic-remote-ssh/targets.ts";
+import { registerAdditiveTools } from "./extensions/atomic-remote-ssh/remote-tools.ts";
+import { registerTransparentTools } from "./extensions/atomic-remote-ssh/transparent-tools.ts";
 
 export default function registerRemoteSsh(pi) {
   const deps = {

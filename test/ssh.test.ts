@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SSH_OPTS, buildSshArgs, capOutput, createSshRunner } from "../atomic-remote-ssh/ssh.ts";
+import { SSH_OPTS, buildSshArgs, capOutput, createSshRunner } from "../extensions/atomic-remote-ssh/ssh.ts";
 import { createFakeSpawn } from "./fixtures/fake-spawn.ts";
 
 test("buildSshArgs emits the frozen option pairs in order, then --, host, command", () => {

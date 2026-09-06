@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createTargetRegistry } from "../atomic-remote-ssh/targets.ts";
+import { createTargetRegistry } from "../extensions/atomic-remote-ssh/targets.ts";
 
 /**
  * Fake-pi test for the transparent registrar.
@@ -12,7 +12,7 @@ import { createTargetRegistry } from "../atomic-remote-ssh/targets.ts";
 test("transparent-tools: ssh_connect / ssh_disconnect behaviour", async (t) => {
   let registerTransparentTools;
   try {
-    ({ registerTransparentTools } = await import("../atomic-remote-ssh/transparent-tools.ts"));
+    ({ registerTransparentTools } = await import("../extensions/atomic-remote-ssh/transparent-tools.ts"));
   } catch (e) {
     t.skip(`typebox not resolvable in this environment: ${e && e.message}`);
     return;

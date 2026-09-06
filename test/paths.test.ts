@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { toRemotePath } from "../atomic-remote-ssh/paths.ts";
+import { toRemotePath } from "../extensions/atomic-remote-ssh/paths.ts";
 
 test("prefix path maps to remoteCwd + rest", () => {
   assert.equal(toRemotePath("/local/cwd", "/remote/cwd", "/local/cwd/a/b.ts"), "/remote/cwd/a/b.ts");
